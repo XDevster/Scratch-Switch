@@ -157,6 +157,8 @@ def generate_c_code(project):
         code_lines.append(f"    pthread_create(&sprite_threads[{i}], NULL, sprite_thread_{i}, NULL);")
 
     code_lines.append("    while (appletMainLoop()) {")
+    code_lines.append("        u64 kDown = hidKeysDown(CONTROLLER_P1_AUTO);")
+    code_lines.append("        u64 kHeld = hidKeysHeld(CONTROLLER_P1_AUTO);")
     code_lines.append("        hidScanInput();")
     code_lines.append("        consoleUpdate(NULL);")
     code_lines.append("    }")
