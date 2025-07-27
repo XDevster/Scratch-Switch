@@ -25,33 +25,45 @@ def generate_c_code(project):
         "#include <stdio.h>",
         "#include <string.h>",
         "",
-        "// --- Простая структура спрайта ---",
+        "// --- Структура спрайта ---",
         "typedef struct {",
         "    int x;",
         "    int y;",
         "} Sprite;",
         "",
+        "// --- Количество спрайтов ---"
+    ]
+
+    sprites = [t for t in project["targets"] if not t.get("isStage", False)]
+    code_lines.append(f"#define NUM_SPRITES {len(sprites)}")
+    code_lines.append("Sprite sprites[NUM_SPRITES];")
+    code_lines.append("")
+
+    code_lines.extend([
         "int main() {",
         "    consoleInit(NULL);",
-        "    Sprite sprite = {240, 135};  // центр экрана 480x270 (пример)",
         "    bool running = true;",
+        "",
+        "    // Инициализация позиций спрайтов",
+    ])
+
+    for i, sprite in enumerate(sprites):
+        code_lines.append(f"    sprites[{i}].x = 240;")
+        code_lines.append(f"    sprites[{i}].y = 135;")
+
+    code_lines.extend([
         "    while (appletMainLoop() && running) {",
         "        hidScanInput();",
         "        u64 kDown = hidKeysDown(CONTROLLER_P1_AUTO);",
         "        u64 kHeld = hidKeysHeld(CONTROLLER_P1_AUTO);",
         "",
         "        consoleClear();",
-        "        printf(\"Sprite position: (%d, %d)\\n\", sprite.x, sprite.y);",
-        "        printf(\"Use D-pad to move. Press PLUS to exit.\\n\");",
-        ""
-    ]
+    ])
 
-    # Функция для блоков if/else с условиями — временно только по key pressed
     def gen_condition(block):
         op = block.get("opcode")
         if op == "sensing_keypressed":
             key = block["inputs"]["KEY_OPTION"][1][1]
-            # Привяжем к кнопкам Switch (пример)
             mapping = {
                 "space": "KEY_A",
                 "left arrow": "KEY_LEFT",
@@ -59,67 +71,53 @@ def generate_c_code(project):
                 "up arrow": "KEY_UP",
                 "down arrow": "KEY_DOWN"
             }
-            key_c = mapping.get(key, "KEY_A")  # по умолчанию A
-            return f"(kHeld & {key_c})"
+            return f"(kHeld & {mapping.get(key, 'KEY_A')})"
         return "0"
 
-    # Вызов зеленого флага — сделаем так, что он запускается сразу
-    code_lines.append("        // Запуск при green flag (автоматически)")
-
-    for target in project["targets"]:
+    # Process each sprite’s script
+    for sprite_index, target in enumerate(sprites):
         blocks = target["blocks"]
-        # Отфильтруем циклы (повторять), движения, условия, say и т.д.
-        # Пройдём по блокам с event_whenflagclicked для порядка
+        code_lines.append(f"        // --- Обработка скриптов спрайта {sprite_index} ---")
         start_blocks = [b for b in blocks.values() if b.get("opcode") == "event_whenflagclicked"]
         for start_block in start_blocks:
-            # Найдём следующий блок
             next_id = start_block.get("next")
             while next_id:
                 block = blocks[next_id]
                 op = block["opcode"]
-                
-                # motion_movesteps
+
                 if op == "motion_movesteps":
                     steps = block["inputs"]["STEPS"][1][1]
-                    code_lines.append(f"        sprite.x += {steps};")
-                
-                # motion_turnright / turnleft (движение по Y)
+                    code_lines.append(f"        sprites[{sprite_index}].x += {steps};")
+
                 elif op == "motion_turnright":
                     degrees = block["inputs"]["DEGREES"][1][1]
-                    code_lines.append(f"        sprite.y += {degrees} / 10;  // упрощённо")
+                    code_lines.append(f"        sprites[{sprite_index}].y += {degrees} / 10;")
+
                 elif op == "motion_turnleft":
                     degrees = block["inputs"]["DEGREES"][1][1]
-                    code_lines.append(f"        sprite.y -= {degrees} / 10;  // упрощённо")
+                    code_lines.append(f"        sprites[{sprite_index}].y -= {degrees} / 10;")
 
-                # control_repeat
+                elif op == "control_wait":
+                    seconds = block["inputs"]["DURATION"][1][1]
+                    ms = int(float(seconds)*1000)
+                    code_lines.append(f"        consoleUpdate(NULL);")
+                    code_lines.append(f"        svcSleepThread({ms} * 1000000ULL);")
+
+                elif op == "looks_say":
+                    msg = block["inputs"]["MESSAGE"][1][1]
+                    code_lines.append(f'        printf("Sprite {sprite_index} says: {escape_c_string(msg)}\\n");')
+
                 elif op == "control_repeat":
                     times = block["inputs"]["TIMES"][1][1]
                     substack_id = block["inputs"]["SUBSTACK"][1]
                     code_lines.append(f"        for (int i=0; i<{times}; i++) {{")
                     if substack_id and substack_id in blocks:
                         sub_block = blocks[substack_id]
-                        # простая рекурсия не сделана, но вызовем повторно с этим блоком
-                        # чтобы не усложнять — сделаем только один уровень вложенности
-                        op_sub = sub_block["opcode"]
-                        if op_sub == "motion_movesteps":
+                        if sub_block["opcode"] == "motion_movesteps":
                             s = sub_block["inputs"]["STEPS"][1][1]
-                            code_lines.append(f"            sprite.x += {s};")
+                            code_lines.append(f"            sprites[{sprite_index}].x += {s};")
                     code_lines.append("        }")
 
-                # control_wait
-                elif op == "control_wait":
-                    seconds = block["inputs"]["DURATION"][1][1]
-                    ms = int(float(seconds)*1000)
-                    code_lines.append(f"        consoleUpdate(NULL);")
-                    code_lines.append(f"        svcSleepThread({ms} * 1000000ULL);  // ждем {seconds} сек")
-
-                # looks_say
-                elif op == "looks_say":
-                    msg = block["inputs"]["MESSAGE"][1][1]
-                    msg_esc = escape_c_string(msg)
-                    code_lines.append(f'        printf("Say: {msg_esc}\\n");')
-
-                # control_if
                 elif op == "control_if":
                     condition_block = block["inputs"]["CONDITION"][1]
                     cond_str = "0"
@@ -131,38 +129,10 @@ def generate_c_code(project):
                         sub_block = blocks[substack_id]
                         if sub_block["opcode"] == "motion_movesteps":
                             s = sub_block["inputs"]["STEPS"][1][1]
-                            code_lines.append(f"            sprite.x += {s};")
+                            code_lines.append(f"            sprites[{sprite_index}].x += {s};")
                     code_lines.append("        }")
 
-                # event_whenkeypressed (обработать управление)
-                elif op == "event_whenkeypressed":
-                    key = block["inputs"]["KEY_OPTION"][1][1]
-                    mapping = {
-                        "space": "KEY_A",
-                        "left arrow": "KEY_LEFT",
-                        "right arrow": "KEY_RIGHT",
-                        "up arrow": "KEY_UP",
-                        "down arrow": "KEY_DOWN"
-                    }
-                    key_c = mapping.get(key, "KEY_A")
-                    # Пример действия при нажатии:
-                    next_b = block.get("next")
-                    if next_b and next_b in blocks:
-                        nxt = blocks[next_b]
-                        if nxt["opcode"] == "motion_movesteps":
-                            s = nxt["inputs"]["STEPS"][1][1]
-                            code_lines.append(f"        if (kHeld & {key_c}) sprite.x += {s};")
-
-                # Переходим к следующему блоку
                 next_id = block.get("next")
-
-    # Добавим управление кнопками Switch для игрока (стандартно)
-    code_lines.append("        // Управление с геймпада (D-pad)")
-    code_lines.append("        if (kHeld & KEY_RIGHT) sprite.x += 5;")
-    code_lines.append("        if (kHeld & KEY_LEFT) sprite.x -= 5;")
-    code_lines.append("        if (kHeld & KEY_UP) sprite.y -= 5;")
-    code_lines.append("        if (kHeld & KEY_DOWN) sprite.y += 5;")
-    code_lines.append("        if (kDown & KEY_PLUS) running = false;  // Выход")
 
     code_lines.append("        consoleUpdate(NULL);")
     code_lines.append("    }")
